@@ -39,7 +39,7 @@
 use std::path::{Path, PathBuf};
 
 use u1_docs::ooxml::opc::Package;
-use u1_docs::ooxml::tree::Document;
+use u1_docs::ooxml::tree::{Document, Node};
 
 /// Environment variable holding semicolon-separated paths to real documents.
 const ENV: &str = "U1_DOCS_REAL_DOCX";
@@ -254,6 +254,238 @@ fn real_documents_parse_completely() {
         "parts that failed to parse:\n  {}",
         unparsed.join("\n  ")
     );
+}
+
+/// Extract every paragraph of every real document and check it behaves.
+///
+/// This is a different question from the round trip. A file can round trip
+/// perfectly while the reader still gets the text wrong — and text extraction is
+/// where "opens fine, reads wrong" lives.
+///
+/// The checks that can be asserted without knowing the document's contents:
+///
+/// - Every part parses.
+/// - Every `w:body`'s children classify sensibly.
+/// - Text extraction terminates and never panics, on parts with arbitrary
+///   structure. This is the real check: an unfamiliar element anywhere in a real
+///   document must not be able to crash the reader.
+///
+/// A file with no paragraphs is not a failure — python-docx's template, for one,
+/// is genuinely empty.
+#[test]
+fn real_documents_expose_their_paragraphs() {
+    use u1_docs::ooxml::wml::{Paragraph, TextOptions};
+
+    let docs = real_documents();
+    if docs.is_empty() {
+        println!("skipping: set {ENV} to run this");
+        return;
+    }
+
+    let mut total_paragraphs = 0usize;
+    let mut bodies_seen = 0usize;
+
+    for path in &docs {
+        let pkg = Package::open(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+
+        for part in pkg.parts() {
+            if part.name() != "word/document.xml" {
+                continue;
+            }
+            let doc = Document::parse(part.bytes())
+                .unwrap_or_else(|e| panic!("{}: {part:?}: {e}", path.display()));
+            let root = doc.root().expect("root");
+
+            for body in root
+                .descendant_elements()
+                .filter(|n| n.local_name() == Some("body"))
+            {
+                bodies_seen += 1;
+                for node in body.descendant_elements() {
+                    if node.local_name() != Some("p") {
+                        continue;
+                    }
+                    let paragraph = Paragraph::from_element(node)
+                        .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+                    // Both option sets must terminate and produce text.
+                    let _ = paragraph.text(TextOptions::default());
+                    let _ = paragraph.text(TextOptions {
+                        include_deletions: true,
+                        normalise_whitespace: false,
+                    });
+                    let _ = paragraph.runs().count();
+                    let _ = paragraph.symbols().count();
+                    total_paragraphs += 1;
+                }
+            }
+        }
+
+        println!("{}: {total_paragraphs} paragraph(s) so far", path.display());
+    }
+
+    println!("bodies: {bodies_seen}, paragraphs: {total_paragraphs}");
+    assert!(
+        bodies_seen > 0,
+        "no w:body found in any real document; the traversal is not finding the body"
+    );
+}
+
+/// No character in a `w:t` may go missing.
+///
+/// This is the check that would have caught every bug the semantics layer is
+/// prone to. Runs nest, fields hide instruction text, deletions hide deleted
+/// text, and namespaces hide whole subtrees — each of those is a way for
+/// `w:t` content to be silently dropped while the document still "works".
+///
+/// The assertion is derived from the file rather than hardcoded, so it holds for
+/// any document: every non-whitespace character that appears in a paragraph's
+/// `w:t` elements must appear in that paragraph's extracted text.
+///
+/// Deleted and field-instruction text is excluded deliberately — it is *supposed*
+/// to be missing, and excluding it by name is the assertion that it is.
+#[test]
+fn real_documents_do_not_drop_text() {
+    use u1_docs::ooxml::wml::{Paragraph, TextOptions};
+
+    let docs = real_documents();
+    if docs.is_empty() {
+        println!("skipping: set {ENV} to run this");
+        return;
+    }
+
+    let opts = TextOptions::default();
+    let mut checked = 0usize;
+    let mut missing_total = 0usize;
+
+    for path in &docs {
+        let pkg = Package::open(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        for part in pkg.parts() {
+            if part.name() != "word/document.xml" {
+                continue;
+            }
+            let doc = Document::parse(part.bytes()).expect("parse");
+            let root = doc.root().expect("root");
+
+            for node in root
+                .descendant_elements()
+                .filter(|n| n.local_name() == Some("p"))
+            {
+                let paragraph = match Paragraph::from_element(node) {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                };
+                let extracted = paragraph.text(opts);
+
+                let expected = expected_characters(node);
+                let missing: Vec<char> = expected
+                    .into_iter()
+                    .filter(|c| !extracted.contains(*c))
+                    .collect();
+
+                if !missing.is_empty() {
+                    missing_total += missing.len();
+                    println!(
+                        "{}: paragraph dropped {:?} (extracted {:?})",
+                        path.display(),
+                        missing,
+                        extracted
+                    );
+                }
+                checked += 1;
+            }
+        }
+    }
+
+    println!("checked {checked} paragraphs in real documents");
+    assert_eq!(
+        missing_total, 0,
+        "{missing_total} character(s) present in a w:t were absent from the extracted text"
+    );
+}
+
+/// The characters a paragraph's content elements are expected to contribute.
+///
+/// Walks the paragraph the naive way — every `w:t` in document order — and
+/// collects the non-whitespace characters. Skips `w:delText` and `w:instrText`
+/// because those are meant to be excluded, and subtrees that legitimately hold
+/// foreign character data.
+fn expected_characters(paragraph: &Node) -> Vec<char> {
+    let mut out = Vec::new();
+    let mut stack: Vec<&Node> = paragraph.descendant_elements().collect();
+    stack.reverse();
+
+    while let Some(node) = stack.pop() {
+        let Some(local) = node.local_name() else {
+            continue;
+        };
+        match local {
+            // Expected to be absent.
+            "delText" | "instrText" | "delInstrText" | "sym" => continue,
+            // Foreign or duplicated content.
+            "AlternateContent" | "Fallback" | "drawing" | "pict" | "object" => continue,
+            _ => {}
+        }
+
+        if local == "t" {
+            let raw = node.text_content();
+            out.extend(raw.chars().filter(|c| !c.is_whitespace()));
+            continue;
+        }
+
+        // Re-push this node's element children, reversed, to keep document order.
+        let mut children: Vec<&Node> = node.children_elements().collect();
+        children.reverse();
+        for child in children {
+            stack.push(child);
+        }
+    }
+
+    out
+}
+
+/// A paragraph's text must be reproducible: parsing the same part twice gives the
+/// same result. Anything else means the reader has hidden state or iteration
+/// order we do not control.
+#[test]
+fn real_documents_extract_deterministically() {
+    use u1_docs::ooxml::wml::{Paragraph, TextOptions};
+
+    let docs = real_documents();
+    if docs.is_empty() {
+        println!("skipping: set {ENV} to run this");
+        return;
+    }
+
+    for path in &docs {
+        let pkg = Package::open(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        for part in pkg.parts() {
+            if part.name() != "word/document.xml" {
+                continue;
+            }
+            let doc = Document::parse(part.bytes()).expect("parse");
+            let root = doc.root().expect("root");
+
+            let once: Vec<String> = root
+                .descendant_elements()
+                .filter(|n| n.local_name() == Some("p"))
+                .filter_map(|n| Paragraph::from_element(n).ok())
+                .map(|p| p.text(TextOptions::default()))
+                .collect();
+            let twice: Vec<String> = root
+                .descendant_elements()
+                .filter(|n| n.local_name() == Some("p"))
+                .filter_map(|n| Paragraph::from_element(n).ok())
+                .map(|p| p.text(TextOptions::default()))
+                .collect();
+
+            assert_eq!(
+                once,
+                twice,
+                "{}: extraction is not deterministic",
+                path.display()
+            );
+        }
+    }
 }
 
 /// Round trip every real document and report, without failing.

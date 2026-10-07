@@ -195,6 +195,30 @@ impl Node {
         }
     }
 
+    /// Direct children that are elements, skipping text and other node kinds.
+    pub fn children_elements(&self) -> impl Iterator<Item = &Node> {
+        self.children().filter(|n| matches!(n, Node::Element(_)))
+    }
+
+    /// All descendant elements, depth-first in document order.
+    ///
+    /// Excludes `self`. Text, comments and CDATA are skipped; this is for
+    /// structural traversal, not text extraction.
+    pub fn descendant_elements(&self) -> DescendantElements<'_> {
+        const EMPTY: &[Node] = &[];
+        let children = match self {
+            Node::Element(e) => e.children.as_slice(),
+            _ => EMPTY,
+        };
+        DescendantElements {
+            stack: children
+                .iter()
+                .rev()
+                .filter(|n| matches!(n, Node::Element(_)))
+                .collect(),
+        }
+    }
+
     /// First descendant with the given local name, depth-first.
     pub fn find(&self, local_name: &str) -> Option<&Node> {
         if self.local_name() == Some(local_name) {
@@ -301,6 +325,36 @@ pub struct Element {
     close_tag: Option<String>,
 }
 
+/// Depth-first iterator over descendant elements.
+///
+/// An explicit stack rather than recursion: real documents contain deeply
+/// nested structures (tables inside table cells inside revision marks), and a
+/// recursive walk makes stack depth a function of the file rather than of our
+/// code.
+pub struct DescendantElements<'a> {
+    stack: Vec<&'a Node>,
+}
+
+impl<'a> Iterator for DescendantElements<'a> {
+    type Item = &'a Node;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let node = self.stack.pop()?;
+        // Reversed so that popping yields document order.
+        const EMPTY: &[Node] = &[];
+        let children = match node {
+            Node::Element(e) => e.children.as_slice(),
+            _ => EMPTY,
+        };
+        for child in children.iter().rev() {
+            if matches!(child, Node::Element(_)) {
+                self.stack.push(child);
+            }
+        }
+        Some(node)
+    }
+}
+
 /// One attribute, preserving its original quoting.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attribute {
@@ -311,6 +365,24 @@ pub struct Attribute {
 }
 
 impl Element {
+    /// All character data directly inside this element and its descendants,
+    /// concatenated in document order.
+    ///
+    /// This is the raw bytes-as-text view and knows nothing about which elements
+    /// are content. For "what does this paragraph read as", use
+    /// [`crate::ooxml::wml::Paragraph`].
+    pub fn text_content(&self) -> String {
+        let mut out = String::new();
+        self.collect_text(&mut out);
+        out
+    }
+
+    fn collect_text(&self, out: &mut String) {
+        for child in &self.children {
+            child.collect_text(out);
+        }
+    }
+
     fn write_to(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(self.open_tag.as_bytes());
         if self.children.is_empty() && self.close_tag.is_none() {
