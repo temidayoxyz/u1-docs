@@ -208,12 +208,50 @@ coverage against a curated corpus rather than only spot-checking ASCII.
    actionable message if either is dropped.
 5. Linux packaging must depend on `libfontconfig`.
 
+### 7. Tests must not assume any particular font is installed
+
+A consequence of finding 5 that took two more CI rounds to fully absorb. Two
+tests asserted things true on Windows and macOS but false on a bare Linux
+container:
+
+- The CJK coverage gate checked whether fontique had *a* Han fallback already
+  registered, then configured the platform chain over the top — reporting
+  "covered" on macOS before producing pure tofu.
+- `fallback_configuration_counts_unresolved_families` asserted that
+  `[Arial, nonsense]` resolves exactly one family. Arial ships on Windows and
+  macOS; a minimal Linux image has no Arial, so the count was zero.
+
+Both are the same mistake as the original bug, one layer down: encoding a
+host-specific assumption into a portable test.
+
+The rule for every test in this repository:
+
+> Assert the invariant, not the environment. A nonsense family name must never
+> resolve. A chain of only-nonexistent families must resolve to zero rather than
+> silently inheriting something. A machine with no font for a script cannot
+> render that script, so the test skips with a message rather than failing.
+
+A skipped assertion must also **say so**. The coverage tests print which families
+their policy resolved, and CI reports installed font counts, so a test that
+quietly tested nothing is visible in the log rather than looking like a pass.
+
 ## Method note
 
-Two of the six findings (5 and 6) came from CI, not from running the spike
-locally — and finding 5 is the one that mattered most. The cross-platform matrix
-was not ceremony: it is the only reason a policy that was silently broken on two
-of three target platforms got caught in the same day it was written.
+Three of the seven findings (5, 6 and 7) came from CI rather than from running
+the spike on the development machine — and they are the ones that would otherwise
+have shipped.
+
+The cross-platform matrix was not ceremony. On the day the fallback policy was
+written it caught:
+
+- a chain that produced **pure tofu on macOS** while passing on Windows
+- a **missing Linux build dependency** (`libfontconfig`) that made the crate
+  unbuildable on Ubuntu
+- **two tests that were not portable**
+
+Every one of these was invisible locally by construction. The first draft of this
+spike was a suite that only ever ran on the author's machine, which is the most
+useful thing to record here.
 
 ## Still open — criteria 2–4
 
