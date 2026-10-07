@@ -1,0 +1,26 @@
+[package]
+name = "ime-protocol"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Manual IME validation harness for U1 Docs (Phase 0 criterion 3)"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/temidayoxyz/u1-docs"
+publish = false
+
+# A separate crate rather than a feature on the product, so nothing in the
+# product's dependency graph references a webview. ADR-0003 is still provisional
+# and the harness is disposable; both facts are easier to honour structurally
+# than with a conditional.
+[dependencies]
+u1-docs = { path = "../.." }
+# Needed directly to build the `CaretMap` the harness injects. Same version and
+# same features as the product uses, so the geometry in the harness is the
+# geometry the product will produce - a different text stack here would quietly
+# invalidate the whole protocol.
+parley = { version = "0.11.1", features = ["complex-scripts"] }
+wry = "0.57.0"
+tao = "0.37.1"
+
+[lints.rust]
+unsafe_code = "forbid"

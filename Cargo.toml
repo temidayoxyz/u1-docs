@@ -1,9 +1,10 @@
+[workspace]
+# The IME protocol harness is a workspace member rather than a feature of this
+# crate, so nothing in the product's dependency graph can reference a webview.
+members = ["spikes/ime-protocol"]
+
 [package]
 name = "u1-docs"
-# With more than one bin, `cargo run` is ambiguous. The default is the spike
-# runner, so `cargo run` and `cargo run -- spike-b` keep working; the IME
-# harness must be named explicitly with --bin.
-default-run = "u1-docs"
 version = "0.0.0"
 edition = "2024"
 # ADR-0002: parley is verified against Rust 1.88+. Hold the same floor so the
@@ -49,25 +50,18 @@ parley = { version = "0.11.1", features = ["complex-scripts"] }
 icu_segmenter = { version = "2.3", features = ["compiled_data", "auto"] }
 unicode-segmentation = "1.13.3"
 
-# wry + tao power the IME protocol harness
-# (`cargo run --features ime-protocol --bin ime_protocol`).
+# The IME protocol harness lives in its own crate at spikes/ime-protocol, not
+# behind a feature here.
 #
-# wry 0.57 is webview-only: `build()` takes a `HasWindowHandle` and no longer
-# creates a window itself, so the host window comes from tao. That split is the
-# same shape Tauri uses, which is mildly reassuring for ADR-0003.
+# A feature flag was the first attempt and it was wrong: `cargo clippy
+# --all-features` in the default CI job switched the webview on, so the job
+# needed webkit2gtk and the default build stopped being webview-free in
+# practice while still appearing to be. A separate crate makes the boundary
+# structural instead of conditional.
 #
-# Both are optional and behind a feature on purpose. ADR-0003 is still
-# PROVISIONAL: the webview half is unvalidated, and pulling a webview into the
-# default build would make an unproven architecture decision look settled.
-# Keeping it opt-in means the default build has no webview dependency at all,
-# and the harness can be deleted wholesale if the protocol refutes ADR-0003.
-wry = { version = "0.57.0", optional = true }
-tao = { version = "0.37.1", optional = true }
-
-[features]
-# The manual IME validation harness. See docs/spike-b-caret-and-ime.md.
-ime-protocol = ["dep:wry", "dep:tao"]
-
+# It is also the honest shape: a throwaway validation harness should not be
+# wired into the product crate at all. ADR-0003 is still PROVISIONAL, so
+# nothing in the product dependency graph may reference a webview.
 [dev-dependencies]
 
 [profile.release]

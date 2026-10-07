@@ -1075,6 +1075,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ime-protocol"
+version = "0.0.0"
+dependencies = [
+ "parley",
+ "tao",
+ "u1-docs",
+ "wry",
+]
+
+[[package]]
 name = "indexmap"
 version = "2.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2320,9 +2330,7 @@ version = "0.0.0"
 dependencies = [
  "icu_segmenter",
  "parley",
- "tao",
  "unicode-segmentation",
- "wry",
 ]
 
 [[package]]

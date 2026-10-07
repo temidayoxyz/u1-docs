@@ -99,12 +99,10 @@ jobs:
       - name: test
         run: cargo test --all-features -- --nocapture
 
-  # The IME harness is feature-gated, so nothing else builds it, and pulling a
-  # webview's Linux build dependencies into the default test job would be absurd.
-  # It therefore gets its own job that installs what it needs.
-  #
-  # Compiling it here means the manual protocol binary cannot rot while nobody is
-  # running it.
+  # The IME harness is a separate workspace crate, so nothing in the product's
+  # dependency graph can reference a webview and the jobs above need no webview
+  # libraries. It gets its own job so that separation is actually exercised, and
+  # so the disposable protocol binary cannot rot while nobody is running it.
   ime-harness:
     name: ime harness builds
     runs-on: ubuntu-latest
@@ -112,7 +110,8 @@ jobs:
       - uses: actions/checkout@v4
 
       # wry's Linux backend is webkit2gtk, whose -sys crates bind against glib,
-      # cairo, gdk and friends via pkg-config. All of them, not just webkit2gtk.
+      # cairo, gdk, pango, xdo and libsoup via pkg-config. All of them, not just
+      # webkit2gtk.
       - name: install webview build dependencies
         run: |
           sudo apt-get update
@@ -124,21 +123,23 @@ jobs:
             libpango1.0-dev \
             libgdk-pixbuf-2.0-dev \
             libxdo-dev \
-            libsoup-3.0-dev
+            libsoup-3.0-dev \
+            libfontconfig1-dev
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --features ime-protocol --bin ime_protocol
+      - run: cargo build -p ime-protocol
 
-      # The no-feature path must stay a clean no-op, or the gating is wrong.
-      - run: cargo build --bin ime_protocol
-      - name: confirm the default build has no webview
+      # The separation this repo depends on, asserted rather than assumed. It was
+      # originally a feature flag, and `cargo clippy --all-features` quietly
+      # switched the webview back on - so this is worth a check that fails loudly.
+      - name: confirm the product has no webview dependency
         run: |
-          if cargo tree -e normal --depth 1 | grep -E '^\S*[├└]── (wry|tao)'; then
-            echo "::error::the default build must not depend on a webview"
+          if cargo tree -p u1-docs -e normal | grep -qE '(wry|tao|webkit2gtk)'; then
+            echo "::error::u1-docs must not depend on a webview; ADR-0003 is provisional"
             exit 1
           fi
-          echo "default build is webview-free"
+          echo "u1-docs is webview-free"
 
   build-release:
     name: release build (${{ matrix.os }})

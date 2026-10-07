@@ -209,7 +209,7 @@ short and each step has an observable pass condition.
 There is a harness. You do not need to build anything first.
 
 ```bash
-cargo run --features ime-protocol --bin ime_protocol
+cargo run -p ime-protocol
 ```
 
 It opens a window with three samples — ASCII, Arabic-inside-English, and Chinese
@@ -221,11 +221,28 @@ never asks the browser where anything is. That is the entire bet of ADR-0003,
 made inspectable: if the OS IME misplaces relative to that anchor, the log shows
 it.
 
-The harness is behind the `ime-protocol` feature, so the default build carries
-**no webview dependency at all** — `cargo tree` confirms it. That is deliberate:
-ADR-0003 is provisional, and an unproven decision should not be baked into the
-default build where it looks settled. If the protocol refutes ADR-0003, the
-harness is deleted wholesale and nothing else changes.
+### Why it is a separate crate
+
+The harness lives at `spikes/ime-protocol`, not behind a feature flag on the
+product crate.
+
+That was the second attempt. A feature flag looked equivalent and was not:
+`cargo clippy --all-features` in the default CI job switched the webview back
+on, so the job needed `webkit2gtk` and the product stopped being webview-free in
+practice while still appearing to be. A separate crate makes the boundary
+**structural** — nothing in `u1-docs`' dependency graph can reference a webview,
+by construction rather than by convention.
+
+It is also the honest shape: a throwaway validation harness does not belong
+wired into the product. If the protocol refutes ADR-0003, `spikes/` is deleted
+and nothing else moves.
+
+CI asserts the separation rather than assuming it, because it has already been
+got wrong once:
+
+```
+u1-docs must not depend on a webview; ADR-0003 is provisional
+```
 
 wry 0.57 attaches to a window handle rather than creating one, so the host window
 comes from `tao`. Same split Tauri uses.

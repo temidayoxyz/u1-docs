@@ -1,4 +1,4 @@
-//! The IME protocol harness â€” Phase 0, criterion 3.
+//! The IME protocol harness - Phase 0, criterion 3.
 //!
 //! **This exists so criterion 3 can be closed by a human, today.**
 //!
@@ -8,15 +8,15 @@
 //! registered input method, a person composing with it, and eyes on the result.
 //!
 //! Rather than leave that as a document describing something to build later,
-//! this is the thing to run.
+//! this is the thing to run:
 //!
 //! ```text
-//! cargo run --features ime-protocol --bin ime-protocol
+//! cargo run -p ime-protocol
 //! ```
 //!
 //! ## What it demonstrates
 //!
-//! - A caret drawn at the position the Rust layout engine computes â€” not at a
+//! - A caret drawn at the position the Rust layout engine computes - not at a
 //!   position the webview guesses.
 //! - A hidden `contenteditable` anchor positioned exactly over that caret, which
 //!   is where the OS IME attaches.
@@ -29,42 +29,30 @@
 //! observable pass condition, and the log tells you what happened without you
 //! having to reason about whether the behaviour was correct.
 //!
+//! ## Why it is a separate crate
+//!
+//! ADR-0003 is PROVISIONAL, so nothing in the product dependency graph may
+//! reference a webview. A feature flag was the first attempt and it failed:
+//! `cargo clippy --all-features` in the default CI job switched the webview on.
+//! A separate crate makes the boundary structural instead of conditional, and
+//! it is the honest shape - a throwaway harness does not belong in the product.
+//!
 //! ## The one thing this cannot settle
 //!
-//! Whether this approach is *right*. It can show you that composition works, or
-//! that it does not. It cannot tell you whether a different approach would have
-//! been better â€” only whether this one survives contact with a real IME.
+//! Whether this approach is *right*. It can show that composition works, or that
+//! it does not. It cannot tell you whether a different approach would have been
+//! better - only whether this one survives contact with a real IME.
 //!
 //! If steps 3 or 4 fail, ADR-0003 is refuted for that platform. Write a
 //! superseding ADR; do not patch around it.
 
-// The whole harness is behind the `ime-protocol` feature, so the default build
-// carries no webview dependency at all (ADR-0003 is still provisional).
-//
-// `#![cfg(feature = ...)]` alone would leave an empty binary with no `main`,
-// which fails to build. So there are two guards: the stub `main` below for the
-// no-feature case, and a `cfg` on the implementation that follows.
-
-#[cfg(not(feature = "ime-protocol"))]
-fn main() {
-    eprintln!("This harness needs the `ime-protocol` feature.");
-    eprintln!("Try: cargo run --features ime-protocol --bin ime_protocol");
-    std::process::exit(2);
-}
-
-// Gated with the rest of the implementation: without it the import is unused,
-// and the harness must not appear in the default build at all.
-#[cfg(feature = "ime-protocol")]
 use u1_docs::caret::{Affinity, CaretMap};
 
 /// Text chosen to make the failure modes visible rather than incidental:
 /// ASCII (where everything works), RTL (where commit offsets usually break),
 /// and CJK (where the IME itself is exercised).
-#[cfg(feature = "ime-protocol")]
 const LTR_SAMPLE: &str = "The quick brown fox jumps over the lazy dog.";
-#[cfg(feature = "ime-protocol")]
 const RTL_SAMPLE: &str = "The meeting is at \u{0645}\u{0631}\u{062D}\u{0628}\u{0627} 14 March.";
-#[cfg(feature = "ime-protocol")]
 const CJK_SAMPLE: &str = "\u{4EBA}\u{4EBA}\u{751F}\u{800C}\u{81EA}\u{7531}";
 
 /// Geometry computed on the Rust side and handed to the webview.
@@ -72,7 +60,6 @@ const CJK_SAMPLE: &str = "\u{4EBA}\u{4EBA}\u{751F}\u{800C}\u{81EA}\u{7531}";
 /// The whole point of ADR-0003 is that these values come from our layout engine
 /// rather than from the DOM, so they are sent as plain numbers and the HTML
 /// never asks the browser where anything is.
-#[cfg(feature = "ime-protocol")]
 fn geometry_for(text: &str) -> String {
     let mut font_cx = parley::FontContext::new();
     let mut layout_cx = parley::LayoutContext::new();
@@ -106,7 +93,6 @@ fn geometry_for(text: &str) -> String {
     )
 }
 
-#[cfg(feature = "ime-protocol")]
 fn serde_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
@@ -123,7 +109,6 @@ fn serde_escape(s: &str) -> String {
     out
 }
 
-#[cfg(feature = "ime-protocol")]
 const HTML: &str = r##"<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -378,7 +363,6 @@ log("ok", "ready. Caret geometry is from the Rust layout engine.");
 </html>
 "##;
 
-#[cfg(feature = "ime-protocol")]
 fn main() {
     use tao::event_loop::ControlFlow;
 
