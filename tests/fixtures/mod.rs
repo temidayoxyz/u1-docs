@@ -1,0 +1,325 @@
+//! Test fixtures for the round-trip suite.
+//!
+//! ## Why we synthesise rather than copy
+//!
+//! Real-world `.docx` files are the best test material and are also the hardest
+//! to obtain legitimately. Vendored copies carry provenance questions, and user
+//! documents carry privacy questions.
+//!
+//! So the fixtures are generated. That is not a compromise — for *these* tests
+//! it is better:
+//!
+//! - **Provenance is unambiguous.** They are ours, under the same licence.
+//! - **The interesting properties are deliberate.** A fixture called
+//!   `docx_with_unknown_elements` contains exactly that, whereas a real
+//!   document's unknowns are whatever the day produced.
+//! - **They are reviewable.** The bytes are in this file, so a reviewer can see
+//!   what a test is actually asserting.
+//!
+//! ## Where real files still belong
+//!
+//! These prove the *mechanism* is lossless. They cannot prove our handling of
+//! real Word output — the `w:compat` flags, the legacy namespaces, the malformed
+//! parts nobody writes on purpose. That is what a contributed corpus is for, and
+//! [ADR-0005](https://github.com/temidayoxyz/unsoftone/blob/main/docs/adr/0005-ooxml-lossless-layer.md)
+//! still calls for one.
+//!
+//! Nothing here is a *substitute* for that. It is a floor, not a ceiling.
+
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+/// A generated fixture, removed when dropped so test runs leave no litter.
+pub struct Fixture {
+    /// Where the generated file lives.
+    pub path: PathBuf,
+    /// Keeps the directory alive and removes it on drop.
+    _dir: TempDir,
+}
+
+/// Minimal RAII temp directory. Avoids a dev-dependency for one use.
+struct TempDir {
+    path: PathBuf,
+}
+
+/// Monotonic counter, so each fixture gets its own directory.
+static NEXT_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+impl TempDir {
+    fn new(tag: &str) -> std::io::Result<Self> {
+        // Uniqueness must be per *call*, not per tag.
+        //
+        // `cargo test` runs the tests in one binary on many threads, and several
+        // of them ask for `minimal_docx()` at the same time. Keying the
+        // directory on the tag alone made those tests share a directory and
+        // clobber each other's files — which showed up as a round-trip test that
+        // passed alone and failed in the suite, which is the least useful way for
+        // a test to fail.
+        let n = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let base = std::env::temp_dir().join(format!("u1-docs-{}-{tag}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base)?;
+        Ok(Self { path: base })
+    }
+
+    fn path(&self, name: &str) -> PathBuf {
+        self.path.join(name)
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+impl Fixture {
+    /// Build a fixture from a set of (name, bytes) parts.
+    fn from_parts(tag: &str, file: &str, parts: &[(&str, Vec<u8>)]) -> std::io::Result<Self> {
+        let dir = TempDir::new(tag)?;
+        let path = dir.path(file);
+        write_package(&path, parts)?;
+        Ok(Self { path, _dir: dir })
+    }
+
+    /// A sibling path in the same temp directory, for output.
+    pub fn temp_sibling(&self, name: &str) -> PathBuf {
+        self.path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(name)
+    }
+}
+
+impl std::ops::Deref for Fixture {
+    type Target = PathBuf;
+
+    fn deref(&self) -> &Self::Target {
+        &self.path
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Zip writing
+//
+// Deliberately minimal and hand-rolled rather than pulling in a writer: OPC is
+// "a zip with a specific part naming convention", and a dependency that can
+// *generate* packages is a dependency that can also be used to accidentally
+// rewrite one we promised to preserve.
+// ---------------------------------------------------------------------------
+
+/// CRC-32 (IEEE), needed for the zip local file header and central directory.
+fn crc32(data: &[u8]) -> u32 {
+    let mut table = [0u32; 256];
+    for (i, entry) in table.iter_mut().enumerate() {
+        let mut c = i as u32;
+        for _ in 0..8 {
+            c = if c & 1 != 0 {
+                0xEDB8_8320 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
+        }
+        *entry = c;
+    }
+    let mut crc = 0xFFFF_FFFFu32;
+    for &b in data {
+        crc = table[((crc ^ b as u32) & 0xFF) as usize] ^ (crc >> 8);
+    }
+    crc ^ 0xFFFF_FFFF
+}
+
+fn write_package(path: &Path, parts: &[(&str, Vec<u8>)]) -> std::io::Result<()> {
+    let mut out: Vec<u8> = Vec::new();
+    let mut central: Vec<u8> = Vec::new();
+    let mut count = 0u16;
+
+    for (name, data) in parts {
+        let offset = out.len() as u32;
+        let crc = crc32(data);
+        let n = name.as_bytes();
+
+        // Local file header
+        out.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
+        out.extend_from_slice(&20u16.to_le_bytes()); // version needed
+        out.extend_from_slice(&0u16.to_le_bytes()); // flags
+        out.extend_from_slice(&0u16.to_le_bytes()); // method: stored
+        out.extend_from_slice(&0u16.to_le_bytes()); // mod time
+        out.extend_from_slice(&0x21u16.to_le_bytes()); // mod date (1980-01-01)
+        out.extend_from_slice(&crc.to_le_bytes());
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(n.len() as u16).to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes()); // extra len
+        out.extend_from_slice(n);
+        out.extend_from_slice(data);
+
+        // Central directory entry
+        central.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
+        central.extend_from_slice(&20u16.to_le_bytes()); // version made by
+        central.extend_from_slice(&20u16.to_le_bytes()); // version needed
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0x21u16.to_le_bytes());
+        central.extend_from_slice(&crc.to_le_bytes());
+        central.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        central.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        central.extend_from_slice(&(n.len() as u16).to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes()); // extra
+        central.extend_from_slice(&0u16.to_le_bytes()); // comment
+        central.extend_from_slice(&0u16.to_le_bytes()); // disk
+        central.extend_from_slice(&0u16.to_le_bytes()); // internal attrs
+        central.extend_from_slice(&0u32.to_le_bytes()); // external attrs
+        central.extend_from_slice(&offset.to_le_bytes());
+        central.extend_from_slice(n);
+
+        count += 1;
+    }
+
+    let central_offset = out.len() as u32;
+    let central_size = central.len() as u32;
+    out.extend_from_slice(&central);
+
+    // End of central directory
+    out.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&count.to_le_bytes());
+    out.extend_from_slice(&count.to_le_bytes());
+    out.extend_from_slice(&central_size.to_le_bytes());
+    out.extend_from_slice(&central_offset.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+
+    let mut f = std::fs::File::create(path)?;
+    f.write_all(&out)?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// OOXML part builders
+// ---------------------------------------------------------------------------
+
+const CONTENT_TYPES: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"#;
+
+const ROOT_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>"#;
+
+fn document_rels() -> String {
+    r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>"#
+        .to_string()
+}
+
+/// The smallest well-formed WordprocessingML document.
+const MINIMAL_BODY: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+<w:p><w:r><w:t>Hello, world.</w:t></w:r></w:p>
+<w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr>
+</w:body>
+</w:document>"#;
+
+/// A document containing things U1 Docs has no model for.
+///
+/// `w:glitter` is invented. `w:commentRangeStart` is real but unimplemented.
+/// `w:smartTag` is a legacy Word 2003 construct. All three must survive.
+const AWKWARD_BODY: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+<w:p w:rsidR="00A1B2C3">
+<w:pPr><w:spacing w:before="240" w:after="120"/></w:pPr>
+<w:r><w:t xml:space="preserve">Signed, </w:t></w:r>
+<w:commentRangeStart w:id="1"/>
+<w:r><w:t>PLACEHOLDER</w:t></w:r>
+<w:commentRangeEnd w:id="1"/>
+<w:r><w:commentReference w:id="1"/></w:r>
+</w:p>
+<w:smartTag w:uri="urn:schemas-microsoft-com:office:smarttags">
+<w:r><w:t>legacy smart tag</w:t></w:r>
+</w:smartTag>
+<w:p><w:glitter w:severity="high"><w:r><w:t>unknown to us</w:t></w:r></w:glitter></w:p>
+<w:tbl>
+<w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr>
+<w:tr><w:tc><w:tcPr><w:tcW w:w="4675" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>cell</w:t></w:r></w:p></w:tc></w:tr>
+</w:tbl>
+<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr>
+</w:body>
+</w:document>"#;
+
+/// An XML document exercising the messy cases a real file contains.
+pub const MESSY_XML: &str = concat!(
+    "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n",
+    "<w:document xmlns:w='urn:single-quoted' xmlns:r=\"urn:double-quoted\">\r\n",
+    "  <!-- a comment Word left behind -->\r\n",
+    "  <w:body>\r\n",
+    "    <![CDATA[ not <markup> & not parsed ]]>\r\n",
+    "    <w:p a='1'   b=\"2\"    c='3'/>\r\n",
+    "    <w:p   ></w:p>\r\n",
+    "  </w:body>\r\n",
+    "</w:document>"
+);
+
+pub fn messy_document_xml() -> String {
+    MESSY_XML.to_string()
+}
+
+fn minimal_parts(body: &str) -> Vec<(&'static str, Vec<u8>)> {
+    vec![
+        ("[Content_Types].xml", CONTENT_TYPES.as_bytes().to_vec()),
+        ("_rels/.rels", ROOT_RELS.as_bytes().to_vec()),
+        ("word/document.xml", body.as_bytes().to_vec()),
+        (
+            "word/_rels/document.xml.rels",
+            document_rels().into_bytes(),
+        ),
+        (
+            "word/styles.xml",
+            b"<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:styles xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"/>".to_vec(),
+        ),
+    ]
+}
+
+/// A valid, minimal `.docx`.
+pub fn minimal_docx() -> Fixture {
+    Fixture::from_parts("minimal", "minimal.docx", &minimal_parts(MINIMAL_BODY))
+        .expect("fixture should build")
+}
+
+/// A `.docx` full of things we cannot model.
+pub fn docx_with_unknown_elements() -> Fixture {
+    Fixture::from_parts("unknown", "unknown.docx", &minimal_parts(AWKWARD_BODY))
+        .expect("fixture should build")
+}
+
+/// A zip that is not an OOXML package.
+pub fn docx_without_main_document() -> Fixture {
+    let parts = vec![
+        ("[Content_Types].xml", CONTENT_TYPES.as_bytes().to_vec()),
+        (
+            "_rels/.rels",
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    ];
+    Fixture::from_parts("nomain", "no-main.docx", &parts).expect("fixture should build")
+}
+
+/// A file that is not a zip at all.
+pub fn not_a_zip() -> Fixture {
+    let dir = TempDir::new("notzip").expect("temp dir");
+    let path = dir.path("plain.docx");
+    std::fs::write(&path, b"I am a text file pretending to be a document.").expect("write");
+    Fixture { path, _dir: dir }
+}

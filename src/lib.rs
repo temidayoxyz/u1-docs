@@ -29,6 +29,7 @@ pub mod caret;
 pub mod corpus;
 pub mod coverage;
 pub mod layout;
+pub mod ooxml;
 pub mod policy;
 pub mod report;
 pub mod report_b;
