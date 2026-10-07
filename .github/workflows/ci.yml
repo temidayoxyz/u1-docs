@@ -47,25 +47,46 @@ jobs:
       # libfontconfig, which GitHub's runners do not provide. This is a real
       # build dependency of U1 Docs on Linux, not a CI quirk - packaging
       # (Phase 5) must depend on it too.
+      #
+      # Noto font package names vary across Ubuntu releases (a bare
+      # fonts-noto-devanagari does not exist on noble), so availability is
+      # probed with apt-cache and only what is actually present is installed.
+      # A missing optional font must degrade the run, never fail it.
       - name: install Linux build + font dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libfontconfig1-dev \
-            fonts-noto-cjk \
-            fonts-noto-devanagari \
-            fonts-noto-thai \
-            fonts-noto-core
+          sudo apt-get install -y --no-install-recommends libfontconfig1-dev
+
+          for pkg in fonts-noto-cjk fonts-noto-core fonts-noto-devanagari \
+                     fonts-noto-thai fonts-indic fonts-lohit-deva fonts-thai-tlwg; do
+            if apt-cache show "$pkg" >/dev/null 2>&1; then
+              echo "installing $pkg"
+              sudo apt-get install -y --no-install-recommends "$pkg"
+            else
+              echo "not available on this release, skipping: $pkg"
+            fi
+          done
 
       # The font-coverage tests skip themselves when a script has no installed
       # font, which keeps a minimal runner green but also means they would
-      # silently test nothing. Installing Noto guarantees the CJK and Indic
-      # coverage assertions actually execute on Linux.
+      # silently test nothing. Report what is present so a skipped assertion is
+      # visible in the log rather than quietly passing.
+      #
+      # Linux-only and `bash`-scoped on purpose: fc-list does not exist on
+      # Windows, and PowerShell treats a non-zero exit from the pipeline as a
+      # step failure.
       - name: report font availability
+        if: runner.os == 'Linux'
+        shell: bash
         run: |
-          echo "Han/Noto fonts installed:" && fc-list | grep -ci 'noto.*cjk' || echo 0
-          echo "Devanagari fonts installed:" && fc-list | grep -ci devanagari || echo 0
+          set +e
+          for script in han devanagari thai arabic; do
+            count=$(fc-list :lang=$(echo "$script") family 2>/dev/null | sort -u | grep -c .)
+            echo "fonts tagged [$script]: $count"
+          done
+          echo "total system families: $(fc-list : family | sort -u | grep -c .)"
+          exit 0
 
       - uses: dtolnay/rust-toolchain@stable
         with:
