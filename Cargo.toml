@@ -43,6 +43,7 @@ parley = { version = "0.11.1", features = ["complex-scripts"] }
 #
 # This indirection is load-bearing. Do not "simplify" it away.
 icu_segmenter = { version = "2.3", features = ["compiled_data", "auto"] }
+unicode-segmentation = "1.13.3"
 
 [dev-dependencies]
 

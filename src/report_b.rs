@@ -459,15 +459,10 @@ pub fn run() -> (String, usize, usize) {
 
     // The same must hold for a ZWJ emoji sequence.
     //
-    // Honest expectation, not the flattering one: the GB9 filter removes the
-    // splits *at* each ZWJ, but a full family sequence is five codepoints and
-    // proper grapheme handling needs **GB11** (emoji ZWJ sequences), which a
-    // per-codepoint extending-character test cannot express.
-    //
-    // So surviving stops that break between persons is the *correct* behaviour
-    // for an approximate filter, and this measurement exists to show the gap
-    // rather than hide it. Phase 1 must move to `unicode-segmentation`, which
-    // implements GB11 properly.
+    // This was the known gap left by the GB9 approximation, which could not
+    // express GB11 and so broke between the people in a family emoji. Real UAX
+    // #29 segmentation via `unicode-segmentation` closes it: the whole sequence
+    // is one grapheme, so it gets one caret stop pair.
     let zwj = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}"; // family
     let z = CaretMap::build_default(
         &mut layout_cx,
@@ -483,18 +478,9 @@ pub fn run() -> (String, usize, usize) {
         "    ZWJ family emoji: {z_raw} raw stops -> {z_graph} grapheme stops (GB11 needs 2)"
     );
     checks.push(Check {
-        label: "C5 GB9 filter removes splits at each ZWJ".into(),
-        passed: z_graph < z_raw && z_graph >= 2,
-        detail: format!("{z_raw} raw -> {z_graph} grapheme stops"),
-    });
-    checks.push(Check {
-        label: "C5 KNOWN GAP: emoji ZWJ needs GB11".into(),
-        // Recorded as failing on purpose, so it cannot be forgotten.
-        passed: false,
-        detail: format!(
-            "family emoji yields {z_graph} stops, want 2. Needs full UAX #29 \
-             (unicode-segmentation) rather than a GB9 approximation."
-        ),
+        label: "C5 ZWJ family emoji is a single caret stop pair".into(),
+        passed: z_graph == 2,
+        detail: format!("{z_raw} raw -> {z_graph} grapheme stops (want 2)"),
     });
     // ---- C6: IME geometry contract -------------------------------------------
     let _ = writeln!(out, "\nC6  Geometry an IME candidate window needs");

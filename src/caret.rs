@@ -29,7 +29,11 @@
 //! its matras is one cluster). Caret positions exist only at cluster boundaries;
 //! snapping to them is the editor's job, not the string's.
 
+use std::cell::OnceCell;
+use std::collections::HashSet;
 use std::ops::Range;
+
+use unicode_segmentation::UnicodeSegmentation;
 
 use parley::{
     Alignment, AlignmentOptions, Cluster, ClusterSide, FontContext, LayoutContext,
@@ -102,6 +106,14 @@ pub struct CaretMap {
     layout: parley::Layout<[u8; 4]>,
     text: String,
     scale: f32,
+    /// Lazily-built prefix sum of line top edges. See [`CaretMap::line_tops`].
+    line_tops: OnceCell<Vec<f32>>,
+    /// Cached grapheme boundary set. See [`CaretMap::grapheme_boundaries`].
+    ///
+    /// Invalidated by `rebreak` only in the sense that grapheme boundaries are
+    /// a property of the text, so they survive re-break — unlike line tops,
+    /// which depend on where the lines fell.
+    grapheme_bounds: OnceCell<HashSet<usize>>,
 }
 
 impl CaretMap {
@@ -125,6 +137,8 @@ impl CaretMap {
             layout,
             text: text.to_string(),
             scale,
+            line_tops: OnceCell::new(),
+            grapheme_bounds: OnceCell::new(),
         }
     }
 
@@ -171,6 +185,10 @@ impl CaretMap {
         self.layout.break_all_lines(max_width);
         self.layout
             .align(Alignment::Start, AlignmentOptions::default());
+        // The offset table describes the old line breaking; drop it and rebuild
+        // lazily. Free here, and it keeps `rebreak` the only mutating operation
+        // on this type.
+        self.line_tops = OnceCell::new();
     }
 
     /// Total advance of the given line.
@@ -279,14 +297,35 @@ impl CaretMap {
     /// each line holds a single style; mixed line heights will need a prefix-sum
     /// table, which this function is shaped to become.
     pub fn line_top(&self, line_index: usize) -> Option<f32> {
-        let mut y = 0.0f32;
-        for (i, line) in self.layout.lines().enumerate() {
-            if i == line_index {
-                return Some(y);
+        self.line_tops().get(line_index).copied()
+    }
+
+    /// Prefix-sum table of line top edges.
+    ///
+    /// ## Why a table rather than a scan
+    ///
+    /// The obvious implementation walks the lines accumulating `line_height`,
+    /// which is O(n) per query and therefore O(n²) for a full-page pass — and
+    /// caret queries are exactly what a scroll, a selection drag and a page
+    /// reflow each do thousands of times.
+    ///
+    /// The cost is one allocation per re-break, which happens on resize and
+    /// repagination rather than per keystroke. That trade follows Spike A
+    /// finding 4: layout is cheap to re-break and must never be rebuilt on the
+    /// interactive path, so work done *inside* `rebreak` is close to free.
+    ///
+    /// Built with `OnceCell` so it is computed on first use and reused until the
+    /// next `rebreak` invalidates it.
+    fn line_tops(&self) -> &[f32] {
+        self.line_tops.get_or_init(|| {
+            let mut tops = Vec::with_capacity(self.line_count());
+            let mut y = 0.0f32;
+            for line in self.layout.lines() {
+                tops.push(y);
+                y += line.metrics().line_height;
             }
-            y += line.metrics().line_height;
-        }
-        None
+            tops
+        })
     }
 
     /// Vertical midpoint of a line, for hit testing.
@@ -448,75 +487,30 @@ impl CaretMap {
     /// `unicode-segmentation`, which also handles emoji ZWJ sequences, regional
     /// indicator pairs and Hangul jamo.
     ///
-    /// Until then, callers doing **insertion** must use this list. Callers doing
-    /// only geometry (drawing, hit testing, IME anchoring) can use the raw one.
+    /// This now uses real UAX #29 segmentation via `unicode-segmentation`,
+    /// which closes the GB11 gap the GB9 approximation left open: a ZWJ family
+    /// emoji is a single caret stop rather than one per person.
     pub fn grapheme_caret_positions(&self) -> Vec<usize> {
+        let allowed = self.grapheme_boundaries();
         self.caret_positions()
             .into_iter()
-            .filter(|&b| self.is_grapheme_boundary(b))
+            .filter(|b| allowed.contains(b))
             .collect()
     }
 
-    /// Conservative grapheme-boundary test: reject stops that sit inside a
-    /// combining sequence.
+    /// Byte offsets at which a grapheme cluster may begin, plus the end of text.
     ///
-    /// The leading-base rule is what matters in practice — UAX #29 GB9, "do not
-    /// break before extending characters" — and it is exactly the case where a
-    /// naive caret walk produces visibly wrong behaviour.
-    fn is_grapheme_boundary(&self, byte: usize) -> bool {
-        if byte == 0 || byte >= self.text.len() {
-            return true;
-        }
-        let Some(ch) = self.text[byte..].chars().next() else {
-            return true;
-        };
-        !is_extending(ch)
+    /// The end of text is always a boundary — it is where the caret sits after
+    /// typing to the end — so it is added explicitly rather than relying on the
+    /// iterator.
+    fn grapheme_boundaries(&self) -> &HashSet<usize> {
+        self.grapheme_bounds.get_or_init(|| {
+            let mut set: HashSet<usize> =
+                self.text.grapheme_indices(true).map(|(i, _)| i).collect();
+            set.insert(self.text.len());
+            set
+        })
     }
-}
-
-/// Does this code point extend the character before it?
-///
-/// A conservative stand-in for UAX #29 GB9 ("do not break before extending
-/// characters") until Phase 1 brings in a full segmentation implementation.
-///
-/// Covering the marks that actually appear in the corpus and in real documents
-/// matters more than covering the entire `Grapheme_Extend` table: getting the
-/// common cases right stops the caret landing inside visible text, which is the
-/// bug users notice.
-fn is_extending(c: char) -> bool {
-    matches!(c as u32,
-        // Combining Diacritical Marks
-        0x0300..=0x036F
-        // Hebrew points
-        | 0x0591..=0x05BD
-        | 0x05BF
-        | 0x05C1..=0x05C2
-        | 0x05C4..=0x05C5
-        | 0x05C7
-        // Arabic marks
-        | 0x0610..=0x061A
-        | 0x064B..=0x065F
-        | 0x0670
-        | 0x06D6..=0x06DC
-        | 0x06DF..=0x06E4
-        | 0x06E7..=0x06E8
-        | 0x06EA..=0x06ED
-        // Devanagari and Indic matras / vowel signs
-        | 0x0900..=0x0903
-        | 0x093A..=0x094F
-        | 0x0951..=0x0957
-        | 0x0962..=0x0963
-        // Thai vowel signs and tone marks
-        | 0x0E31
-        | 0x0E34..=0x0E3A
-        | 0x0E47..=0x0E4E
-        // Zero-width joiner: must never be split from its neighbours, which is
-        // what makes a ZWJ emoji sequence a single caret stop.
-        | 0x200D
-        // Variation selectors
-        | 0xFE00..=0xFE0F
-        | 0xE0100..=0xE01EF
-    )
 }
 
 /// Direction a cursor movement is stepping in.

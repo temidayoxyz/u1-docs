@@ -137,6 +137,42 @@ fn grapheme_filter_handles_devanagari_matra() {
 }
 
 #[test]
+fn zwj_family_emoji_is_a_single_caret_stop() {
+    // This was the known GB11 gap the GB9 approximation could not close: it
+    // broke between the people in a family emoji. Real UAX #29 segmentation
+    // (GB11) treats the whole sequence as one grapheme.
+    let m = map_for("\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}", WRAP);
+    assert_eq!(
+        m.grapheme_caret_positions().len(),
+        2,
+        "a family emoji must be one caret stop pair, not one per person"
+    );
+}
+
+#[test]
+fn regional_indicator_flags_pair_up() {
+    // GB12/GB13: regional indicators pair into single flags. Two letters in a
+    // row is a flag; three is a flag plus a leftover letter.
+    let flag = map_for("\u{1F1F3}\u{1F1F4}", WRAP); // NO
+    assert_eq!(
+        flag.grapheme_caret_positions().len(),
+        2,
+        "flag must be atomic"
+    );
+}
+
+#[test]
+fn hangul_jamo_compose_into_one_grapheme() {
+    // Conjoining jamo must not offer a caret stop between the jamo blocks.
+    let m = map_for("\u{1100}\u{1161}\u{11A8}", WRAP); // choseong + jungseong + jongseong
+    assert_eq!(
+        m.grapheme_caret_positions().len(),
+        2,
+        "conjoining Hangul jamo must form one grapheme"
+    );
+}
+
+#[test]
 fn raw_stops_always_sit_on_char_boundaries() {
     // Defensive: every geometry path assumes byte offsets are valid UTF-8
     // boundaries. A non-boundary offset would panic on slicing.
