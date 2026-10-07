@@ -99,6 +99,17 @@ jobs:
       - name: test
         run: cargo test --all-features -- --nocapture
 
+      # The IME harness is feature-gated, so nothing else builds it. On Linux it
+      # additionally needs webkit2gtk. Compiling it here means the manual
+      # protocol binary cannot rot while nobody is running it.
+      - name: install webkit2gtk (Linux, for the IME harness)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev
+
+      - name: build the IME protocol harness
+        run: cargo build --features ime-protocol --bin ime_protocol
+
   build-release:
     name: release build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

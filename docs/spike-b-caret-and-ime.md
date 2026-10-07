@@ -204,7 +204,49 @@ short and each step has an observable pass condition.
 | 7 | Resize the window mid-composition | Candidate window tracks the new caret position |
 | 8 | Click elsewhere mid-composition | Composition commits or cancels per policy, never leaves orphaned preedit |
 
-### Recording the result
+## Running it
+
+There is a harness. You do not need to build anything first.
+
+```bash
+cargo run --features ime-protocol --bin ime_protocol
+```
+
+It opens a window with three samples — ASCII, Arabic-inside-English, and Chinese
+— and a live event log.
+
+The caret positions, line boxes and the IME anchor's coordinates are all
+**computed by the Rust layout engine and injected as plain numbers**. The HTML
+never asks the browser where anything is. That is the entire bet of ADR-0003,
+made inspectable: if the OS IME misplaces relative to that anchor, the log shows
+it.
+
+The harness is behind the `ime-protocol` feature, so the default build carries
+**no webview dependency at all** — `cargo tree` confirms it. That is deliberate:
+ADR-0003 is provisional, and an unproven decision should not be baked into the
+default build where it looks settled. If the protocol refutes ADR-0003, the
+harness is deleted wholesale and nothing else changes.
+
+wry 0.57 attaches to a window handle rather than creating one, so the host window
+comes from `tao`. Same split Tauri uses.
+
+### What the log tells you
+
+| Event | Meaning |
+| ----- | ------- |
+| `compositionstart` | the IME attached at the current caret |
+| `compositionupdate` | preedit is changing — it must render **inline**, not in a box |
+| `compositionend` | text committed; the log records what arrived |
+| `input` (not composing) | **a failure signal** — text arrived outside composition |
+| `keydown keyCode 229` | normal for IME keys, not a problem |
+
+The harness cannot verify on its own that a commit landed at the *right* offset,
+because the document text lives in the webview while the geometry lives in Rust.
+That comparison is step 3, and it is deliberately a human judgement.
+
+---
+
+## Recording the result
 
 Open an issue titled `IME protocol: <platform> <result>`, noting which steps
 passed. If **step 3 or 4 fails**, ADR-0003's webview approach is refuted for that
