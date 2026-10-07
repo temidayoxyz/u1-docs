@@ -380,15 +380,38 @@ fn fallback_configuration_rejects_unknown_scripts_gracefully() {
 
 #[test]
 fn fallback_configuration_counts_unresolved_families() {
-    // Returns the count that actually matched, not a boolean. A caller must be
-    // able to tell "all resolved" from "some resolved" from "none resolved" —
-    // only the last is a hard failure, but the middle case still leaves a
-    // coverage gap worth reporting.
+    // Returns the count that actually matched, not a boolean, so a caller can
+    // tell "all resolved" from "some resolved" from "none resolved".
+    //
+    // Arial is NOT assumed present: it ships on Windows and macOS but not on a
+    // bare Linux container. The assertion is therefore about the *count* being
+    // less than requested — a nonsense family name must never resolve, and a
+    // partly-available chain must be reported as partial rather than as success.
     let mut h = LayoutHarness::new();
-    let resolved = h.set_script_fallback("Latn", &["Arial", "ThisFontDoesNotExist12345"]);
+    let nonsense = "ThisFontDoesNotExist12345";
+    let resolved = h.set_script_fallback("Latn", &["Arial", nonsense]);
+
+    assert!(
+        resolved <= 1,
+        "the nonsense family name resolved, so the count is not trustworthy: {resolved}"
+    );
+
+    if resolved == 1 {
+        assert!(
+            !h.fallback_counts(&["Latn"]).is_empty(),
+            "a resolved family should be registered"
+        );
+    }
+
+    // The invariant that actually matters, independent of the host's fonts.
+    let all_missing = h.set_script_fallback(
+        "Latn",
+        &[nonsense, "AlsoNotARealFont987654", "NopeNotHere54321"],
+    );
     assert_eq!(
-        resolved, 1,
-        "expected exactly one of the two named families to resolve"
+        all_missing, 0,
+        "a chain of only-nonexistent families must resolve to zero, not silently \
+         fall back to something else"
     );
 }
 
