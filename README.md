@@ -82,21 +82,34 @@ to. See [`PLAN.md` "Not now"](https://github.com/temidayoxyz/unsoftone/blob/main
 
 ## Current work
 
-The immediate phase is a **throwaway spike** validating the two assumptions that
-gate the entire architecture:
+**Spike A — inline text layout: complete. [ADR-0002](https://github.com/temidayoxyz/unsoftone/blob/main/docs/adr/0002-text-layout-parley.md) holds.**
 
-1. Can we lay out a real Word document at interactive speed with correct
-   shaping, bidirectional text and CJK?
-2. Can we get a caret, IME and text selection working in the chosen UI stack?
+Findings in [`docs/spike-a-inline-layout.md`](docs/spike-a-inline-layout.md).
+Reproduce with `cargo run`. Four results that change how we build:
 
-The second question is the real one. Getting an input method editor working
-correctly inside shaped, bidirectional text is the single largest technical risk
-in this project, and finding out now is far cheaper than finding out in six
-months. See
-[ADR-0003](https://github.com/temidayoxyz/unsoftone/blob/main/docs/adr/0003-desktop-ui-stack.md).
+1. **`parley/complex-scripts` is not a default feature** — without it, CJK and
+   Thai cannot break lines at all. `icu_segmenter` must also be pulled in
+   directly, because parley omits the complex-script models. Both are now
+   enforced by tests.
+2. **Default font fallback does not guarantee coverage.** It picked fonts
+   covering part of a script and produced `.notdef` for ordinary Chinese
+   characters. U1 Docs needs its own per-script, per-platform fallback policy.
+3. **Layout must be lazy and cached.** Cold layout is 2.58ms/paragraph and
+   includes font loading; warm re-break of a visible page is **2.66ms against a
+   16.7ms frame budget**. Re-break cached layouts, never rebuild the document on
+   the interactive path.
+4. Bidi is correct: RTL samples start at the right edge, mixed-direction text
+   splits into separate visual runs.
 
-**Spike exit criteria:** a document with RTL, CJK, tables and images scrolls and
-edits smoothly, with a working caret and a working CJK input method.
+### Next: the IME / caret spike
+
+The next spike answers criteria 2–3: caret, selection, arrow-key navigation
+through mixed-direction text, and — the largest technical risk in the project —
+a **working CJK input method**. This validates
+[ADR-0003](https://github.com/temidayoxyz/unsoftone/blob/main/docs/adr/0003-desktop-ui-stack.md),
+which is provisional until it does.
+
+Screen-reader output (criterion 4) follows.
 
 ---
 

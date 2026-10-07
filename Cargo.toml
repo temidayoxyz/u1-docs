@@ -24,6 +24,25 @@ publish = false
 # Adding crates speculatively is how a project ends up with a dependency tree it
 # cannot explain and cannot remove. Prove first, then depend.
 [dependencies]
+# `complex-scripts` is NOT in parley's default features, and parley gates both
+# its WordSegmenter and LineSegmenter behind it:
+#
+#     LineSegmenter::new_for_non_complex_scripts(opt)   <- without the feature
+#     LineSegmenter::new(opt)                           <- with it
+#
+# Without it, CJK and Thai line breaking fail outright with
+# "ICU4X data error: No segmentation model for complex script". Found by the
+# Phase 0 spike; a word processor cannot ship without this.
+parley = { version = "0.11.1", features = ["complex-scripts"] }
+
+# parley declares its `complex-scripts` feature as empty and depends on
+# icu_segmenter with `default-features = false`, which omits `auto`/`lstm` -
+# the models that actually segment complex scripts. Cargo unifies features
+# across the dependency graph for a given crate version, so declaring the same
+# version here as a direct dependency is what actually turns the data on.
+#
+# This indirection is load-bearing. Do not "simplify" it away.
+icu_segmenter = { version = "2.3", features = ["compiled_data", "auto"] }
 
 [dev-dependencies]
 
