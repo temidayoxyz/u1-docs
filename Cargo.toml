@@ -1,0 +1,41 @@
+[package]
+name = "u1-docs"
+version = "0.0.0"
+edition = "2024"
+# ADR-0002: parley is verified against Rust 1.88+. Hold the same floor so the
+# MSRV does not silently drift below what our text stack supports.
+rust-version = "1.88"
+
+description = "U1 Docs - a local-first word processor"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/temidayoxyz/u1-docs"
+homepage = "https://github.com/temidayoxyz/u1-docs"
+readme = "README.md"
+keywords = ["word-processor", "docx", "ooxml", "offline-first"]
+categories = ["text-editors"]
+publish = false
+
+# Intentionally empty.
+#
+# ADR-0002 commits us to parley for inline text layout and ADR-0003 commits us
+# to a webview shell. Neither dependency is added until the Phase 0 spike proves
+# the approach works - see PLAN.md in the unsoftone repository.
+#
+# Adding crates speculatively is how a project ends up with a dependency tree it
+# cannot explain and cannot remove. Prove first, then depend.
+[dependencies]
+
+[dev-dependencies]
+
+[profile.release]
+# Office applications are layout- and I/O-bound, not compute-bound.
+# Optimise for predictable frame times and build time, not raw throughput.
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+# Slower builds, much faster edit-compile cycles. Worth it for a project that
+# will spend its life in the editor.
+opt-level = 0
+debug = 1

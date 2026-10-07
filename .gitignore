@@ -1,0 +1,26 @@
+# Rust / Cargo
+#
+# Every U1 product is a Rust codebase (see ADR-0001 in the unsoftone
+# repository). Build output must never be committed.
+/target/
+**/*.rs.bk
+*.pdb
+*.dSYM/
+
+# Editors
+.idea/
+.vscode/
+.fleet/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local scratch. Never commit working documents or private files.
+scratch/
+*.tmp
+*.local

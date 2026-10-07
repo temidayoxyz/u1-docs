@@ -1,0 +1,25 @@
+# Normalise line endings in the repository to LF.
+#
+# On Windows, git's default core.autocrlf=true would store CRLF in the object
+# database, producing noisy whole-file diffs when the same document is edited
+# on Linux or macOS. For a project with three target platforms this must be
+# settled in the repository, not in each contributor's local config.
+
+* text=auto eol=lf
+
+# Binary assets - never touch
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.pdf   binary
+*.ttf   binary
+*.otf   binary
+*.woff  binary
+*.woff2 binary
+*.zip   binary
+*.docx  binary
+*.xlsx  binary
+*.pptx  binary

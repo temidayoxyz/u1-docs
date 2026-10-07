@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Ecosystem direction, roadmap and architecture
+    url: https://github.com/temidayoxyz/unsoftone/discussions
+    about: Cross-product questions belong in the meta-repository, not in a product issue tracker.
+  - name: Read the plan before filing a feature request
+    url: https://github.com/temidayoxyz/unsoftone/blob/main/PLAN.md
+    about: PLAN.md has a "Not now" table that explains what is deliberately out of scope, and why.

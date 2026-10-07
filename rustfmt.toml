@@ -1,0 +1,7 @@
+# Rust defaults are good; pin them explicitly so formatting is identical
+# regardless of the contributor's local rustfmt version or editor settings.
+edition = "2024"
+max_width = 100
+newline_style = "Unix"
+use_field_init_shorthand = true
+use_try_shorthand = true

@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref. Saves CI minutes and avoids reviewing
+# stale output.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Fail the build on warnings. Relaxing this is how a quality bar quietly
+  # disappears - see CONTRIBUTING.md.
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  # Formatting is cheap, so it gets its own job and reports fast.
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  # Fast feedback on the common failure modes, before the slower matrix job.
+  lint-and-test:
+    name: clippy + test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Do not cancel this matrix on one failure - a Linux-only failure is
+      # exactly the kind of thing this job exists to catch.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+
+      - name: clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: test
+        run: cargo test --all-features
+
+      # U1 Docs is offline-first by construction (ADR-0007). Nothing in the build
+      # or test path may require the network. This job makes that checkable now
+      # rather than discovering it after a dependency phones home.
+      - name: verify no network dependency in build
+        run: cargo tree --edges normal --prefix none | sort -u
+        env:
+          CARGO_NET_OFFLINE: "true"
+
+  build-release:
+    name: release build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
