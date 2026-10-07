@@ -8,7 +8,7 @@
 //!
 //! The central experiment is a **before/after on font fallback policy**. The
 //! first run of this spike found that the default fallback does not guarantee
-//! glyph coverage — it selects fonts that cover part of a script but not all of
+//! glyph coverage Ã¢â‚¬â€ it selects fonts that cover part of a script but not all of
 //! it, so common characters render as `.notdef`. The question that decides the
 //! architecture is whether an explicit per-script policy fixes it, because if
 //! it does, the problem is ours to solve and ADR-0002 stands.
@@ -27,7 +27,7 @@ const WRAP_WIDTH: f32 = 6.5 * 96.0;
 /// Budget for re-breaking one paragraph: the typing / resize / repaginate path.
 const REBREAK_BUDGET: Duration = Duration::from_micros(500);
 
-/// Budget for re-laying out one *visible page* — the real interactive
+/// Budget for re-laying out one *visible page* Ã¢â‚¬â€ the real interactive
 /// requirement. One frame at 60fps.
 const FRAME_BUDGET: Duration = Duration::from_micros(16_667);
 
@@ -40,42 +40,6 @@ const BULK_PARAGRAPHS: usize = 400;
 /// ISO 15924 codes for the scripts in the corpus.
 const SCRIPTS: &[&str] = &[
     "Latn", "Arab", "Hebr", "Deva", "Thai", "Hani", "Kana", "Hang",
-];
-
-/// An explicit per-script fallback policy, mirroring what a browser does.
-///
-/// Windows-first because the spike runs on Windows. Every entry names several
-/// families because no single family covers a whole script — Simplified and
-/// Traditional Han differ, and a document may contain both.
-///
-/// Hard-coding these in the product would be wrong; the real design is a
-/// per-platform policy table (see the finding this produces).
-const FALLBACK_POLICY: &[(&str, &[&str])] = &[
-    (
-        "Hani",
-        &[
-            "SimSun",
-            "NSimSun",
-            "Microsoft YaHei",
-            "Microsoft JhengHei",
-            "Malgun Gothic",
-        ],
-    ),
-    (
-        "Kana",
-        &[
-            "Yu Gothic",
-            "Meiryo",
-            "MS Gothic",
-            "Malgun Gothic",
-            "SimSun",
-        ],
-    ),
-    ("Hang", &["Malgun Gothic", "Gulim", "SimSun"]),
-    ("Deva", &["Nirmala UI", "Nirmala Text", "Mangal"]),
-    ("Arab", &["Segoe UI", "Arial", "Tahoma", "Times New Roman"]),
-    ("Hebr", &["Segoe UI", "Arial", "Tahoma", "Times New Roman"]),
-    ("Thai", &["Leelawadee UI", "Tahoma", "Segoe UI"]),
 ];
 
 struct Verdict {
@@ -220,30 +184,29 @@ pub fn run() -> bool {
     let coverage_default_ok = !sums_default.iter().any(|s| s.has_missing_glyphs());
 
     // ---- Experiment B: explicit per-script policy ---------------------------
-    let _ = writeln!(out, "\nQ3  Applying explicit per-script fallback policy");
-    let mut unresolved = Vec::new();
-    for (script, families) in FALLBACK_POLICY {
-        if !h.set_script_fallback(script, families) {
-            unresolved.push(*script);
-        }
-    }
-    let after = h.fallback_counts(SCRIPTS);
+    let _ = writeln!(out, "\nQ3  Applying per-platform fallback policy");
+    let applied = h.apply_policy();
+    let gaps: Vec<&str> = applied
+        .iter()
+        .filter(|(_, resolved, _)| *resolved == 0)
+        .map(|(s, _, _)| *s)
+        .collect();
     let _ = writeln!(
         out,
         "    {}",
-        after
+        applied
             .iter()
-            .map(|(s, n)| format!("{s}={n}"))
+            .map(|(s, r, n)| format!("{s}={r}/{n}"))
             .collect::<Vec<_>>()
             .join("  ")
     );
     let _ = writeln!(
         out,
-        "    families absent on this machine (skipped): {}",
-        if unresolved.is_empty() {
+        "    scripts with NO font installed on this machine: {}",
+        if gaps.is_empty() {
             "(none)".into()
         } else {
-            unresolved.join(", ")
+            gaps.join(", ")
         }
     );
 

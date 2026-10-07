@@ -165,20 +165,18 @@ impl LayoutHarness {
     /// Configure an explicit fallback chain for a script.
     ///
     /// `script` is an ISO 15924 code (`Hani`, `Deva`, `Arab`, ...). `families`
-    /// are family names that must exist in the collection; missing ones are
-    /// skipped.
+    /// are family names; those absent from the collection are skipped.
     ///
-    /// ## Why this exists
+    /// Returns **how many families actually resolved**. Zero means either an
+    /// unknown script code or none of the named families are installed — and
+    /// that distinction matters, because a chain that resolves to nothing is
+    /// worse than no chain at all: it replaces a partially-covering default
+    /// with guaranteed tofu.
     ///
-    /// The Phase 0 spike found that fontique's *default* fallback does not
-    /// guarantee coverage: it selected fonts that cover part of a script but not
-    /// all of it, producing `.notdef` boxes for common characters. Browsers
-    /// solve this with an explicit per-script fallback policy rather than
-    /// trusting the system. This method exists to prove that is sufficient
-    /// before we build a policy around it.
-    pub fn set_script_fallback(&mut self, script: &str, families: &[&str]) -> bool {
+    /// Callers should therefore check the count, not assume success.
+    pub fn set_script_fallback(&mut self, script: &str, families: &[&str]) -> usize {
         let Ok(script) = fontique::Script::parse(script) else {
-            return false;
+            return 0;
         };
         let key = fontique::FallbackKey::new(script, None);
         let ids: Vec<fontique::FamilyId> = families
@@ -187,7 +185,26 @@ impl LayoutHarness {
             .collect();
         let resolved = ids.len();
         self.font_cx.collection.set_fallbacks(key, ids.into_iter());
-        resolved == families.len()
+        resolved
+    }
+
+    /// Apply the per-platform policy, returning `(script, resolved, requested)`
+    /// for every entry.
+    ///
+    /// An entry with `resolved == 0` is a packaging gap on this machine — the
+    /// user has no font for that script at all — and should be reported rather
+    /// than silently ignored.
+    pub fn apply_policy(&mut self) -> Vec<(&'static str, usize, usize)> {
+        crate::policy::policy()
+            .iter()
+            .map(|e| {
+                (
+                    e.script,
+                    self.set_script_fallback(e.script, e.families),
+                    e.families.len(),
+                )
+            })
+            .collect()
     }
 
     /// How many fallback families are configured for each given script.

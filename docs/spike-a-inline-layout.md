@@ -125,6 +125,59 @@ implication is firm:
 edits to *other* paragraphs. This becomes the central design constraint on
 `u1-layout` in Phase 1.
 
+### 5. A single fallback policy does not work — it must be per-platform
+
+This one was found by CI rather than by reasoning, and it is the most instructive
+result in the spike.
+
+The first version of the policy hardcoded **Windows** family names
+(`SimSun`, `NSimSun`, `Microsoft YaHei`, …). It passed on the development
+machine and on Windows CI. On **macOS CI every one of those families was
+absent**, so the chain resolved to *nothing* and all 43 characters of the Chinese
+sample rendered as `.notdef`.
+
+That is strictly worse than the bug it was meant to fix: the failure is more
+widespread, and it is invisible to whoever wrote it. A fallback chain that
+resolves to nothing is not a safe default — it must be treated as an error.
+
+Fixes applied:
+
+- `src/policy.rs` holds separate tables for Windows, macOS and Linux.
+- `set_script_fallback` now returns **how many families actually resolved**, not
+  a boolean. Callers can distinguish "all resolved" from "some" from "none", and
+  only the last is fatal — but the middle case still leaves a coverage gap worth
+  reporting.
+- `apply_policy` returns per-script resolution counts, reported in the spike
+  output so a packaging gap is visible rather than silent.
+- **All three tables are compiled on every platform** and asserted by tests, so a
+  policy that is never compiled on your machine cannot rot unnoticed. A test also
+  enforces that all three cover the same set of scripts.
+
+`policy()` returning an empty slice for an unrecognised OS would silently
+produce pure tofu with no error anywhere, so a test asserts it is non-empty on
+every supported platform.
+
+### 6. Linux requires system `libfontconfig` to build
+
+Ubuntu CI failed to compile:
+
+```
+error: failed to run custom build command for `yeslogic-fontconfig-sys v6.0.1`
+The system library `fontconfig` required by crate `yeslogic-fontconfig-sys` was
+not found.
+```
+
+`fontique`'s fontconfig backend links against system fontconfig on Linux. This
+is a genuine build dependency of U1 Docs on Linux, not a CI quirk —
+**packaging in Phase 5 must depend on `libfontconfig`**, and the CI workflow now
+installs `libfontconfig1-dev`.
+
+CI also installs `fonts-noto-cjk`, `fonts-noto-devanagari`, `fonts-noto-thai`
+and `fonts-noto-core`. The coverage tests skip themselves when a script has no
+installed font, which keeps a minimal runner green — but also means they would
+silently test nothing. Installing Noto guarantees the CJK and Indic assertions
+actually execute on Linux.
+
 ---
 
 ## Open item
@@ -143,13 +196,24 @@ coverage against a curated corpus rather than only spot-checking ASCII.
 
 ## What this means for Phase 1
 
-1. `u1-font` must own an explicit, per-platform fallback policy — not the default.
+1. `u1-font` must own an explicit, per-platform fallback policy
+   (`src/policy.rs` is the prototype) — not the system default, and not a single
+   hardcoded table.
 2. `u1-font` must verify coverage and report gaps, rather than silently
-   substituting a partial-coverage font.
+   substituting a partial-coverage font. A chain that resolves to nothing is an
+   error, not a fallback.
 3. `u1-layout` must be incremental: re-break cached layouts, never rebuild the
    document on the interactive path.
 4. Enabling two specific features is now enforced by a test that fails with an
    actionable message if either is dropped.
+5. Linux packaging must depend on `libfontconfig`.
+
+## Method note
+
+Two of the six findings (5 and 6) came from CI, not from running the spike
+locally — and finding 5 is the one that mattered most. The cross-platform matrix
+was not ceremony: it is the only reason a policy that was silently broken on two
+of three target platforms got caught in the same day it was written.
 
 ## Still open — criteria 2–4
 

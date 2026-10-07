@@ -30,13 +30,25 @@ fn sample(name: &str) -> &'static u1_docs::corpus::Sample {
         .expect("named corpus sample")
 }
 
-/// Does this machine have a font that covers Han characters at all?
-fn has_cjk_coverage(h: &mut LayoutHarness) -> bool {
-    let names = h.inventory();
-    names.family_count > 20
-        && h.fallback_counts(&["Hani"])
-            .first()
-            .is_some_and(|(_, n)| *n > 0)
+/// How many of the platform's Han fallback families actually resolved.
+///
+/// ## Why this applies the policy instead of merely inspecting it
+///
+/// An earlier version of this gate checked only whether fontique already had a
+/// Han fallback family registered, then configured a chain of **Windows** font
+/// names. On macOS CI none of those exist, so the chain resolved to nothing and
+/// every Chinese character rendered as `.notdef` — the test failed on macOS
+/// while passing on Windows.
+///
+/// That is the whole lesson of [`u1_docs::policy`]: a fallback chain resolving
+/// to nothing is *worse* than no chain, and the only reliable way to know is to
+/// apply it and count what matched.
+fn han_policy_resolves(h: &mut LayoutHarness) -> usize {
+    let entry = u1_docs::policy::policy()
+        .iter()
+        .find(|e| e.script == "Hani")
+        .expect("policy must define a Han entry");
+    h.set_script_fallback(entry.script, entry.families)
 }
 
 // ---------------------------------------------------------------------------
@@ -328,22 +340,17 @@ fn explicit_fallback_resolves_cjk_coverage() {
     // holds, but only where a CJK font actually exists - a machine with no Han
     // font cannot render Han, and failing there would be noise.
     let mut h = LayoutHarness::new();
-    if !has_cjk_coverage(&mut h) {
-        eprintln!("skipping: no CJK font coverage detected on this machine");
+    let resolved = han_policy_resolves(&mut h);
+    if resolved == 0 {
+        eprintln!(
+            "skipping: none of this platform's Han fallback families are installed \
+             (target_os = {}). A machine with no Han font cannot render Han, and \
+             failing here would be noise rather than signal.",
+            std::env::consts::OS
+        );
         return;
     }
-
-    let configured = h.set_script_fallback(
-        "Hani",
-        &[
-            "SimSun",
-            "NSimSun",
-            "Microsoft YaHei",
-            "Microsoft JhengHei",
-            "Malgun Gothic",
-        ],
-    );
-    eprintln!("CJK fallback configured: {configured}");
+    eprintln!("Han fallback families resolved: {resolved}");
 
     let s = sample("chinese-no-spaces");
     let sum = h.layout(
@@ -355,29 +362,121 @@ fn explicit_fallback_resolves_cjk_coverage() {
     );
     assert!(
         !sum.has_missing_glyphs(),
-        "common Simplified Chinese characters still resolve to .notdef after an \
-         explicit Han fallback chain: {:?} (U+ points in the spike report)",
+        "common Simplified Chinese characters still resolve to .notdef after the \
+         platform Han fallback chain resolved {resolved} family/families: {:?}",
         sum.missing_chars
     );
 }
 
 #[test]
 fn fallback_configuration_rejects_unknown_scripts_gracefully() {
-    // `set_script_fallback` takes an ISO 15924 code. A bad code must return
-    // false rather than panic, because the real policy table will be
-    // platform-specific and may name scripts absent on a given machine.
+    // `set_script_fallback` takes an ISO 15924 code and returns how many families
+    // resolved. A bad code must return 0 rather than panic, because the real
+    // policy table is platform-specific and may name scripts absent on a given
+    // machine.
     let mut h = LayoutHarness::new();
-    assert!(!h.set_script_fallback("NotAScript", &["Arial"]));
+    assert_eq!(h.set_script_fallback("NotAScript", &["Arial"]), 0);
 }
 
 #[test]
-fn fallback_configuration_reports_unresolved_families() {
-    // Returns false when not every named family exists, so a platform-specific
-    // policy can be validated at startup instead of failing silently later.
+fn fallback_configuration_counts_unresolved_families() {
+    // Returns the count that actually matched, not a boolean. A caller must be
+    // able to tell "all resolved" from "some resolved" from "none resolved" —
+    // only the last is a hard failure, but the middle case still leaves a
+    // coverage gap worth reporting.
     let mut h = LayoutHarness::new();
     let resolved = h.set_script_fallback("Latn", &["Arial", "ThisFontDoesNotExist12345"]);
-    assert!(
-        !resolved,
-        "expected false when a named family is missing from the collection"
+    assert_eq!(
+        resolved, 1,
+        "expected exactly one of the two named families to resolve"
     );
+}
+
+#[test]
+fn policy_resolves_at_least_one_family_for_core_scripts() {
+    // A packaging sanity check on the host machine: a user with no font at all
+    // for a core script cannot read documents in it. Reported, not asserted —
+    // this prints what is available rather than failing on a minimal container.
+    let mut h = LayoutHarness::new();
+    for (script, resolved, requested) in h.apply_policy() {
+        eprintln!("{script}: {resolved}/{requested} families resolved");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Policy tables: validated for every platform, not just the host
+// ---------------------------------------------------------------------------
+
+#[test]
+fn every_platform_policy_is_well_formed() {
+    // All three tables are compiled on every platform precisely so this can run
+    // anywhere. A policy that is only ever compiled on the machine that wrote it
+    // is the bug this module exists to prevent.
+    use u1_docs::policy::ALL_POLICIES;
+
+    let core = [
+        "Latn", "Arab", "Hebr", "Deva", "Thai", "Hani", "Kana", "Hang",
+    ];
+
+    for (platform, entries) in ALL_POLICIES {
+        assert!(!entries.is_empty(), "{platform} policy is empty");
+
+        let mut seen: Vec<&str> = Vec::new();
+        for e in entries.iter() {
+            assert!(
+                !e.families.is_empty(),
+                "{platform}: script {} has no fallback families",
+                e.script
+            );
+            assert!(
+                !e.families.iter().any(|f| f.trim().is_empty()),
+                "{platform}: script {} lists a blank family name",
+                e.script
+            );
+            assert!(
+                !seen.contains(&e.script),
+                "{platform}: script {} listed twice",
+                e.script
+            );
+            seen.push(e.script);
+        }
+
+        for want in core {
+            assert!(
+                seen.contains(&want),
+                "{platform}: policy is missing a {want} entry; expected at least {core:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn all_platforms_agree_on_which_scripts_they_cover() {
+    // Cross-platform consistency: a script supported on one platform and missing
+    // on another is an inconsistency a user will eventually hit, and one that is
+    // very easy to introduce when editing a single table.
+    use u1_docs::policy::ALL_POLICIES;
+
+    let baseline: Vec<&str> = ALL_POLICIES[0].1.iter().map(|e| e.script).collect();
+    for (platform, entries) in &ALL_POLICIES[1..] {
+        let here: Vec<&str> = entries.iter().map(|e| e.script).collect();
+        assert_eq!(
+            baseline, here,
+            "{platform} covers a different set of scripts than {}",
+            ALL_POLICIES[0].0
+        );
+    }
+}
+
+#[test]
+fn platform_policy_is_not_empty_on_this_host() {
+    // The host must actually have a policy, or `policy()` silently returns `&[]`
+    // and every glyph becomes tofu with no error anywhere.
+    let os = std::env::consts::OS;
+    if matches!(os, "windows" | "macos" | "linux") {
+        assert!(
+            !u1_docs::policy::policy().is_empty(),
+            "no policy selected for supported OS {os}"
+        );
+    }
 }

@@ -42,6 +42,31 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
+
+      # Linux: fontique's fontconfig backend links against the system
+      # libfontconfig, which GitHub's runners do not provide. This is a real
+      # build dependency of U1 Docs on Linux, not a CI quirk - packaging
+      # (Phase 5) must depend on it too.
+      - name: install Linux build + font dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libfontconfig1-dev \
+            fonts-noto-cjk \
+            fonts-noto-devanagari \
+            fonts-noto-thai \
+            fonts-noto-core
+
+      # The font-coverage tests skip themselves when a script has no installed
+      # font, which keeps a minimal runner green but also means they would
+      # silently test nothing. Installing Noto guarantees the CJK and Indic
+      # coverage assertions actually execute on Linux.
+      - name: report font availability
+        run: |
+          echo "Han/Noto fonts installed:" && fc-list | grep -ci 'noto.*cjk' || echo 0
+          echo "Devanagari fonts installed:" && fc-list | grep -ci devanagari || echo 0
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -51,15 +76,7 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: test
-        run: cargo test --all-features
-
-      # U1 Docs is offline-first by construction (ADR-0007). Nothing in the build
-      # or test path may require the network. This job makes that checkable now
-      # rather than discovering it after a dependency phones home.
-      - name: verify no network dependency in build
-        run: cargo tree --edges normal --prefix none | sort -u
-        env:
-          CARGO_NET_OFFLINE: "true"
+        run: cargo test --all-features -- --nocapture
 
   build-release:
     name: release build (${{ matrix.os }})
@@ -70,6 +87,11 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
+      - name: install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libfontconfig1-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release

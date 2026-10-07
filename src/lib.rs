@@ -27,6 +27,7 @@
 
 pub mod corpus;
 pub mod layout;
+pub mod policy;
 pub mod report;
 
 /// Product identity. Fixed by ADR-0004; the repository is named for this.
