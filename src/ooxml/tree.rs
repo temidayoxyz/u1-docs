@@ -84,14 +84,69 @@ pub enum Node {
     Text(String),
 }
 
-impl Node {
+/// A parsed XML document: prolog, root element, and trailing content, in order.
+///
+/// Use this when you intend to edit and re-serialise. Use [`Node::parse`] when
+/// you only want the root element and do not care about the surrounding bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Document {
+    children: Vec<Node>,
+}
+
+impl Document {
     /// Parse a complete XML document.
-    pub fn parse(input: &[u8]) -> Result<Node, ParseError> {
+    pub fn parse(input: &[u8]) -> Result<Document, ParseError> {
         let src = std::str::from_utf8(input).map_err(|e| ParseError {
             offset: e.valid_up_to(),
             message: format!("not valid UTF-8: {e}"),
         })?;
         Parser::new(src).parse_document()
+    }
+
+    /// All document-level nodes, in order.
+    pub fn children(&self) -> &[Node] {
+        &self.children
+    }
+
+    /// The root element.
+    pub fn root(&self) -> Option<&Node> {
+        self.children.iter().find(|n| matches!(n, Node::Element(_)))
+    }
+
+    /// Mutable access to the root element.
+    pub fn root_mut(&mut self) -> Option<&mut Node> {
+        self.children
+            .iter_mut()
+            .find(|n| matches!(n, Node::Element(_)))
+    }
+
+    /// Reproduce the document's bytes exactly.
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        for child in &self.children {
+            child.write_to(&mut out);
+        }
+        out
+    }
+}
+
+impl Node {
+    /// Parse and unwrap to the root element.
+    ///
+    /// Convenient for reading. **Lossy with respect to document-level bytes** —
+    /// the prolog and any trailing content are discarded, so a parse/serialize
+    /// cycle of the returned node does not reproduce the input.
+    ///
+    /// Use [`Document::parse`] when that matters, which is every time the
+    /// document will be saved.
+    pub fn parse(input: &[u8]) -> Result<Node, ParseError> {
+        Document::parse(input)?
+            .root()
+            .cloned()
+            .ok_or_else(|| ParseError {
+                offset: 0,
+                message: "no root element".into(),
+            })
     }
 
     /// Reproduce this node's bytes exactly.
@@ -339,62 +394,63 @@ impl<'a> Parser<'a> {
 
     /// Parse one root element plus any surrounding prolog, comments and
     /// whitespace.
-    fn parse_document(mut self) -> Result<Node, ParseError> {
-        let mut root: Option<Node> = None;
-        let mut pending: Vec<Node> = Vec::new();
+    ///
+    /// ## Why this returns a synthetic wrapper
+    ///
+    /// An XML document is a prolog, then a root element, then trailing content
+    /// that is still part of the file — a newline after the root is the common
+    /// case, and every OOXML part written by a tool that ends its output with a
+    /// newline has one.
+    ///
+    /// Returning only the root would silently discard that trailing byte, and
+    /// returning the root with the trailing content *attached to it* would move
+    /// it. The first version of this function did the second thing, and it
+    /// turned every byte-identical round trip on a real Word file into a
+    /// one-byte-shifted one: the fixture suite passed because no fixture had a
+    /// trailing newline, and every part of a genuine file failed.
+    ///
+    /// So the wrapper exists to hold document-level content in order. It has an
+    /// empty name and emits no tags of its own, so it is invisible in output.
+    ///
+    /// `Node::parse_document` — rather than `parse` — is what callers want when
+    /// they intend to edit and re-serialise. `parse` is the convenience form and
+    /// unwraps to the root, which is what reading is for.
+    fn parse_document(mut self) -> Result<Document, ParseError> {
+        let mut children: Vec<Node> = Vec::new();
+        let mut root_seen = false;
 
         while self.pos < self.src.len() {
             if self.starts_with("<?") {
-                pending.push(Node::ProcessingInstruction(self.read_pi()?));
+                children.push(Node::ProcessingInstruction(self.read_pi()?));
             } else if self.starts_with("<!--") {
-                pending.push(Node::Comment(self.read_comment()?));
+                children.push(Node::Comment(self.read_comment()?));
             } else if self.starts_with("<![CDATA[") {
-                pending.push(Node::CData(self.read_cdata()?));
+                children.push(Node::CData(self.read_cdata()?));
             } else if self.starts_with("<!") {
                 // DOCTYPE and friends. Kept verbatim; not interpreted.
-                pending.push(Node::ProcessingInstruction(self.read_declaration()?));
+                children.push(Node::ProcessingInstruction(self.read_declaration()?));
             } else if self.starts_with("</") {
                 return self.err("closing tag with no matching opening tag");
             } else if self.peek() == Some(b'<') {
-                if root.is_some() {
+                if root_seen {
                     return self.err("more than one root element");
                 }
-                root = Some(Node::Element(self.read_element()?));
+                children.push(Node::Element(self.read_element()?));
+                root_seen = true;
             } else {
                 let text = self.read_text()?;
-                if !text.trim().is_empty() && root.is_none() {
+                if !text.trim().is_empty() && !root_seen {
                     return self.err("character data before the root element");
                 }
-                pending.push(Node::Text(text));
+                children.push(Node::Text(text));
             }
         }
 
-        match root {
-            Some(Node::Element(e)) => {
-                // Attach everything that preceded or followed the root as
-                // siblings of a synthetic holder, so serialization is exact.
-                // A single-element document — which every OOXML part is — keeps
-                // the root itself as the returned node, and `pending` is empty
-                // in practice.
-                if pending.is_empty() {
-                    Ok(Node::Element(e))
-                } else {
-                    // Wrap so nothing is dropped. The wrapper never appears in
-                    // output because serialize() writes children directly.
-                    let mut wrapper = Element {
-                        name: String::new(),
-                        attributes: Vec::new(),
-                        children: pending,
-                        open_tag: String::new(),
-                        close_tag: None,
-                    };
-                    wrapper.children.push(Node::Element(e));
-                    Ok(Node::Element(wrapper))
-                }
-            }
-            Some(other) => Ok(other),
-            None => self.err("no root element"),
+        if !root_seen {
+            return self.err("no root element");
         }
+
+        Ok(Document { children })
     }
 
     fn read_pi(&mut self) -> Result<String, ParseError> {

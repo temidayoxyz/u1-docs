@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
 
-use crate::ooxml::tree::{Node, ParseError};
+use crate::ooxml::tree::{Document, Node, ParseError};
 
 /// An error opening or saving a package.
 #[derive(Debug)]
@@ -84,12 +84,16 @@ impl Part {
         &self.bytes
     }
 
-    /// Parse this part as XML.
+    /// Parse this part as a full XML document, prolog and trailing bytes
+    /// included.
     ///
-    /// The bytes are untouched; parsing produces a separate tree. Callers that
-    /// want to keep their edits must `set_part_bytes` explicitly.
-    pub fn parse_xml(&self) -> Result<Node, OpcError> {
-        Node::parse(&self.bytes).map_err(|source| OpcError::Xml {
+    /// Returns a [`Document`], not a `Node`. That distinction is load-bearing:
+    /// every OOXML part ends with a newline in practice, and a `Node`-shaped
+    /// parse discards it — so a document edited through one could not be saved
+    /// back byte-identically. Round-tripping is the whole point of this module,
+    /// so the safe type is the default.
+    pub fn parse_xml(&self) -> Result<Document, OpcError> {
+        Document::parse(&self.bytes).map_err(|source| OpcError::Xml {
             part: self.name.clone(),
             source,
         })
@@ -165,13 +169,18 @@ impl Package {
             ));
         };
 
-        let tree = Node::parse(&rels.bytes).map_err(|source| OpcError::Xml {
+        let doc = Document::parse(&rels.bytes).map_err(|source| OpcError::Xml {
             part: "_rels/.rels".into(),
             source,
         })?;
+        let Some(root) = doc.root() else {
+            return Err(OpcError::NoMainDocument(
+                "_rels/.rels has no root Relationships element".into(),
+            ));
+        };
 
         let mut rels_found: Vec<&Node> = Vec::new();
-        tree.find_all("Relationship", &mut rels_found);
+        root.find_all("Relationship", &mut rels_found);
 
         for rel in rels_found {
             let Node::Element(rel) = rel else {

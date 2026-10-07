@@ -34,7 +34,7 @@ use std::collections::BTreeMap;
 // ---------------------------------------------------------------------------
 
 use u1_docs::ooxml::opc::Package;
-use u1_docs::ooxml::tree::Node;
+use u1_docs::ooxml::tree::{Document, Node};
 
 mod fixtures;
 
@@ -217,9 +217,9 @@ fn round_trip_survives_unknown_elements() {
 #[test]
 fn xml_tree_round_trips_to_identical_bytes() {
     let src = fixtures::messy_document_xml();
-    let tree = Node::parse(src.as_bytes()).expect("parse");
+    let doc = Document::parse(src.as_bytes()).expect("parse");
     assert_eq!(
-        tree.serialize().as_slice(),
+        doc.serialize().as_slice(),
         src.as_bytes(),
         "a parse/serialize cycle changed the bytes"
     );
@@ -230,9 +230,9 @@ fn xml_tree_preserves_attribute_order_and_quotes() {
     // `quick-xml` and most parsers normalise quotes and reorder attributes.
     // Both are lossy in a way that matters here.
     let src = "<w:p a='1'   b=\"2\"    c='3'/>";
-    let tree = Node::parse(src.as_bytes()).expect("parse");
+    let doc = Document::parse(src.as_bytes()).expect("parse");
     assert_eq!(
-        tree.serialize().as_slice(),
+        doc.serialize().as_slice(),
         src.as_bytes(),
         "attribute quoting or spacing was normalised away"
     );
@@ -241,8 +241,8 @@ fn xml_tree_preserves_attribute_order_and_quotes() {
 #[test]
 fn xml_tree_preserves_cdata_and_comments() {
     let src = "<r><!-- keep me --><![CDATA[<not markup>]]></r>";
-    let tree = Node::parse(src.as_bytes()).expect("parse");
-    let out = tree.serialize();
+    let doc = Document::parse(src.as_bytes()).expect("parse");
+    let out = doc.serialize();
     assert!(
         String::from_utf8_lossy(&out).contains("keep me"),
         "comment was dropped: {}",
@@ -258,8 +258,8 @@ fn xml_tree_preserves_cdata_and_comments() {
 #[test]
 fn xml_tree_handles_namespaces_without_rewriting_them() {
     let src = "<w:document xmlns:w=\"urn:w\"><w:body/></w:document>";
-    let tree = Node::parse(src.as_bytes()).expect("parse");
-    let out = String::from_utf8(tree.serialize()).expect("utf8");
+    let doc = Document::parse(src.as_bytes()).expect("parse");
+    let out = String::from_utf8(doc.serialize()).expect("utf8");
     assert_eq!(out, src, "namespace prefixes were rewritten");
 }
 
@@ -276,7 +276,7 @@ fn xml_tree_rejects_malformed_input_rather_than_guessing() {
         "",                 // empty
     ] {
         assert!(
-            Node::parse(bad.as_bytes()).is_err(),
+            Document::parse(bad.as_bytes()).is_err(),
             "malformed input {bad:?} should not parse"
         );
     }
