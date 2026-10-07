@@ -1,12 +1,25 @@
 //! U1 Docs entry point.
 //!
-//! For now this runs the Phase 0 inline-layout spike and prints its report.
-//! It is not a word processor.
+//! The binary runs whichever spike is next. Both are disposable: the findings
+//! are what matter, not the harnesses.
 //!
-//! Exits non-zero if any spike question fails, so CI can gate on it.
+//! ```text
+//! cargo run            # Spike A - inline text layout (ADR-0002)
+//! cargo run -- spike-b # Spike B - caret, hit testing, navigation (ADR-0003)
+//! ```
 
 fn main() {
-    if !u1_docs::report::run() {
+    let spike_b = std::env::args().any(|a| a == "spike-b" || a == "--spike-b");
+
+    // `report_b` returns (text, passed, total); only the counts matter here.
+    let ok = if spike_b {
+        let (_, passed, total) = u1_docs::report_b::run();
+        passed == total
+    } else {
+        u1_docs::report::run()
+    };
+
+    if !ok {
         std::process::exit(1);
     }
 }

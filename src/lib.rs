@@ -1,4 +1,4 @@
-//! U1 Docs — a local-first word processor.
+//! U1 Docs Ã¢â‚¬â€ a local-first word processor.
 //!
 //! **Status: pre-alpha.** There is no word processor here yet, and nothing in
 //! this project should pretend otherwise.
@@ -9,11 +9,11 @@
 //! [`PLAN.md`](https://github.com/temidayoxyz/unsoftone/blob/main/PLAN.md):
 //! validating the two assumptions that gate the entire architecture.
 //!
-//! - [`layout`] — the parley harness (ADR-0002). Proves inline text layout can
+//! - [`layout`] Ã¢â‚¬â€ the parley harness (ADR-0002). Proves inline text layout can
 //!   carry the scripts and performance budget a word processor needs.
-//! - [`corpus`] — multilingual samples. A spike that only measures English
+//! - [`corpus`] Ã¢â‚¬â€ multilingual samples. A spike that only measures English
 //!   proves nothing.
-//! - [`report`] — the six questions and their verdicts.
+//! - [`report`] Ã¢â‚¬â€ the six questions and their verdicts.
 //!
 //! ## The one rule that governs everything here
 //!
@@ -23,12 +23,14 @@
 //!
 //! ## The product philosophy
 //!
-//! No network, no accounts, no telemetry, no activation — ever. See ADR-0007.
+//! No network, no accounts, no telemetry, no activation Ã¢â‚¬â€ ever. See ADR-0007.
 
+pub mod caret;
 pub mod corpus;
 pub mod layout;
 pub mod policy;
 pub mod report;
+pub mod report_b;
 
 /// Product identity. Fixed by ADR-0004; the repository is named for this.
 pub const PRODUCT: &str = "U1 Docs";
